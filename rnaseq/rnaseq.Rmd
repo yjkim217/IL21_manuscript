@@ -1,0 +1,311 @@
+---
+title: "RNAseq analysis"
+author: "Youngjun Kim"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load Data
+## Load required libraries
+```{r working_directory}
+suppressMessages(library(ggplot2))
+suppressMessages(library(dplyr))
+suppressMessages(library(tibble))
+suppressMessages(library(tximport))
+suppressMessages(library(ggplot2))
+suppressMessages(library(pheatmap))
+suppressMessages(library(fgsea))
+suppressMessages(library(AnnotationDbi))
+suppressMessages(library(org.Mm.eg.db))
+suppressMessages(library(DESeq2))
+```
+## Load RNAseq Data
+### List of samples
+40: aCD40, 44: aCD40 + IL-4, 61: aCD40 + IL-21, 65: aCD40 + IL-4 + IL-21
+```{r samplelist}
+samples <- c("40-6hr-1", "40-6hr-2", "40-6hr-3", 
+             "40-24hr-1", "40-24hr-2", "40-24hr-3",                   
+             "44-6hr-1", "44-6hr-2","44-6hr-3", 
+             "44-24hr-1", "44-24hr-2", "44-24hr-3", 
+             "61-6hr-1", "61-6hr-2", "61-6hr-3",
+             "61-24hr-1", "61-24hr-2", "61-24hr-3", 
+             "65-6hr-1", "65-6hr-2", "65-6hr-3", 
+             "65-24hr-1", "65-24hr-2", "65-24hr-3")
+```
+
+### Save Salmon quant file names corresponding to each RNA-seq sample
+```{r rnaseq_files}
+rnaseq_files <- setNames(file.path("salmon_result", samples, "/quant.sf"), 
+                         samples)
+```
+
+### Load transcript to gene index
+```{r rnaseq_load_tx2gene}
+tx2gene_raw <- read.delim(file.path("data", "tx2gene.txt"), sep="\t")
+tx2gene <- tx2gene_raw[,c("ensembl_transcript_id", "external_gene_name")]
+ens2sym <- tx2gene_raw[,c("ensembl_gene_id", "external_gene_name")]
+```
+
+### Import salmon quant files using tximport
+
+```{r rnaseq_tximport}
+txi <- tximport(rnaseq_files, type="salmon", txIn = TRUE, txOut = FALSE, 
+                tx2gene=tx2gene, ignoreTxVersion=TRUE)
+```
+## Setup DESeq object
+### Construct a Sampletable
+```{r sampletable_stim}
+stim <- factor(rep(c("aCD40", "aCD40_IL4", "aCD40_IL21", "aCD40_IL4_IL21"), 
+                   each = 6))
+timepoint <- factor(rep(c(6, 24), 4, each = 3))
+sampleTable <- data.frame(stim = stim,
+                          timepoint = timepoint,
+                          row.names = samples)
+```
+
+### Make dds object
+```{r dds_stim}
+dds <- DESeqDataSetFromTximport(txi = txi, 
+                                colData = sampleTable, 
+                                design = ~ stim + timepoint)
+dds <- DESeq(dds)
+```
+# PCA Analysis
+## Define extended method
+```{r pca_extended}
+plotPCA.ext <- function (object, intgroup = "condition", ntop = 500, 
+                         returnData = FALSE, first_pc = 1, second_pc = 2) 
+{
+  first_pc_name <- paste("PC", first_pc, sep="")
+  second_pc_name <- paste("PC", second_pc, sep="")
+  
+  rv <- rowVars(assay(object))
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, 
+                                                     length(rv)))]
+  
+  pca <- prcomp(t(assay(object)[select, ]))
+  percentVar <- pca$sdev^2/sum(pca$sdev^2)
+  
+  if (!all(intgroup %in% names(colData(object)))) {
+    stop("the argument 'intgroup' should specify columns of colData(dds)")
+  }
+  
+  intgroup.df <- as.data.frame(colData(object)[, intgroup, drop = FALSE])
+  group <- if (length(intgroup) > 1) {
+    factor(apply(intgroup.df, 1, paste, collapse = " : "))
+    } else {
+      colData(object)[[intgroup]]
+    }
+  
+  d <- data.frame(PC1 = pca$x[, first_pc], PC2 = pca$x[, second_pc], 
+                  group = group, intgroup.df, name = colData(object)[,1])
+  if (returnData) {
+    attr(d, "percentVar") <- percentVar[c(first_pc, second_pc)]
+    return(d)
+  }
+  
+    ggplot(data = d, aes_string(x = first_pc_name, y = second_pc_name, 
+                                color = "group", label = "name")) + 
+      geom_point(size = 3) + 
+      xlab(paste0(first_pc_name, ": ", round(percentVar[first_pc] * 100), 
+                  "% variance")) + 
+      ylab(paste0(second_pc_name, ": ", round(percentVar[second_pc] * 100), 
+                  "% variance")) + 
+      coord_fixed() + 
+      geom_text_repel(size=3) 
+}
+
+```
+## Plotting
+```{r pca_plot}
+vsd <- vst(dds, blind=FALSE)
+first_pc <- 1
+second_pc <- 2
+
+pcaData <- plotPCA.ext(vsd, intgroup=c("stim", "timepoint"), 
+                       returnData=TRUE, 
+                       first_pc=first_pc, second_pc=second_pc)
+
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+pca_plot <- ggplot(pcaData, aes(PC1, PC2, color=stim, shape=timepoint)) +
+  geom_point(size=4) +
+  scale_color_brewer(palette="Dark2",
+                     breaks=c("aCD40", "aCD40_IL4", "aCD40_IL21", "aCD40_IL4_IL21"),
+                     labels=c("aCD40", "aCD40 + IL-4", "aCD40 + IL-21", "aCD40 + IL-4 + IL-21")) +
+  scale_shape_discrete(breaks=c("6", "24"),
+                       labels=c("6hr", "24hr")) +
+  xlab(paste0("PC", first_pc, ": ",percentVar[1],"% variance")) +
+  ylab(paste0("PC", second_pc,": ",percentVar[2],"% variance")) + 
+  coord_fixed()
+pca_plot
+```
+
+# Plotting counts of individual Gene (RNA-seq)
+```{r indiv.plot_rnaseq}
+# Gene list
+genes_to_plot <- c("Bcl2", "Bcl2l1", "Bcl2l11", "Ighg1", "Il21r")
+
+
+timepoint.labs <- c("6hr", "24hr")
+names(timepoint.labs) <- c("6", "24")
+
+stim.labs <- c("aCD40", "aCD40 + IL-21", "aCD40 + IL-4", "aCD40 + IL-4 + IL-21")
+names(stim.labs) <- c("aCD40", "aCD40_IL21", "aCD40_IL4", "aCD40_IL4_IL21")
+
+# Function to plot individual gene
+plot_gene <- function(gene) {
+  geneCount <- plotCounts(dds, gene=gene, 
+                          intgroup=c("stim", "timepoint"), returnData = TRUE)
+
+  indiv_plot <- ggplot(geneCount, aes(x=stim, y=count, fill=stim)) + 
+    geom_dotplot(binaxis='y', stackdir='center') +
+    scale_fill_brewer(palette="Dark2") +
+    theme(legend.position="none",
+          plot.title = element_text(hjust = 0.5, face="bold.italic", size=18),
+          axis.text.x = element_text(angle = 45, vjust = 0.5, face="bold", size=10),
+          axis.title.x = element_blank()) +
+    labs(title = gene) +
+    facet_grid(~ timepoint,
+               labeller = labeller(timepoint = timepoint.labs),
+               switch = "x") +
+    scale_x_discrete(limit = c("aCD40", "aCD40_IL4",  "aCD40_IL21", "aCD40_IL4_IL21"),
+                     labels = c("aCD40","aCD40 + IL-4", "aCD40 + IL-21", "aCD40 + IL-4 + IL-21"))
+
+  return(indiv_plot)
+}
+
+# Plot for each gene
+for (gene in genes_to_plot) {
+  plot <- plot_gene(gene)
+  print(plot)
+}
+```
+
+
+# Heatmap
+```{r create_heatmap}
+rld <- rlogTransformation(dds, blind=FALSE)
+rld_matrix <- assay(rld)
+variances <- apply(rld_matrix, 1, var)
+
+heatmap_genes <- c("Cdkn1a", "Pmaip1", "Bcl2l11", "Bcl2", "Bcl2l1")
+
+df_by_var <- rld_matrix[heatmap_genes,]
+
+samples_6hr <- c("40-6hr-1", "40-6hr-2", "40-6hr-3", "44-6hr-1", "44-6hr-2", "44-6hr-3",
+                 "61-6hr-1", "61-6hr-2", "61-6hr-3", "65-6hr-1", "65-6hr-2", "65-6hr-3")
+samples_24hr <- c("40-24hr-1", "40-24hr-2", "40-24hr-3", "44-24hr-1", "44-24hr-2", "44-24hr-3",
+                 "61-24hr-1", "61-24hr-2", "61-24hr-3", "65-24hr-1", "65-24hr-2", "65-24hr-3")
+
+annotation_col = data.frame(
+  IL4 = rep(c("YES", "NO", "YES", "NO"), each = 3),
+  IL21 = rep(c("NO", "NO", "YES", "YES"), each = 3)
+)
+
+rownames(annotation_col) = c("40-6hr-1", "40-6hr-2", "40-6hr-3", 
+                             "44-6hr-1", "44-6hr-2", "44-6hr-3",
+                             "61-6hr-1", "61-6hr-2", "61-6hr-3", 
+                             "65-6hr-1", "65-6hr-2", "65-6hr-3")
+ann_colors = list(
+    IL4 = c(YES = "black", NO = "white"),
+    IL21 = c(YES = "black", NO = "white")
+)
+
+df_by_var <- df_by_var[,samples_6hr]
+
+heatmap <- pheatmap(
+  df_by_var,
+  cluster_rows = FALSE, # Cluster the rows of the heatmap (genes in this case)
+  cluster_cols = FALSE, # Cluster the columns of the heatmap (samples),
+  show_rownames = TRUE, # There are too many genes to clearly show the labels
+  show_colnames = FALSE,
+  annotation_col = annotation_col,
+  annotation_colors = ann_colors,
+  colorRampPalette(c(
+    "navy",
+    "white",
+    "firebrick3"
+  ))(50
+  ),
+  scale = "row" # Scale values in the direction of genes (rows)
+)
+```
+
+# Pathway analysis
+## Setup dds for pairwise comparison
+```{r deseq_object_wald}
+condition_factors <- factor(rep(c("40_6hr", "40_24hr", "44_6hr", "44_24hr", 
+                                  "61_6hr", "61_24hr", "65_6hr", "65_24hr"), 
+                                each=3))
+sampleTable_pairwise <- data.frame(condition = condition_factors,
+                                   row.names = samples)
+dds_pairwise <- DESeqDataSetFromTximport(txi = txi, 
+                                         colData = sampleTable_pairwise, 
+                                         design = ~ condition)
+dds_pairwise <- DESeq(dds_pairwise)
+```
+## Comparison
+```{r wald_test}
+expt <- "65_24hr"
+ctrl <- "44_24hr"
+
+res_unshrunken <- results(dds_pairwise, 
+                          contrast=c("condition", expt, ctrl))
+
+res <- lfcShrink(dds_pairwise,
+                 contrast=c("condition", expt, ctrl),
+                 type = "ashr",
+                 res=res_unshrunken,
+                 quiet=TRUE)
+
+res$entrez <- mapIds(org.Mm.eg.db, keys=row.names(res), 
+                     column="ENTREZID", keytype="ALIAS", multiVals="first")
+```
+
+## FGSEA
+```{r fgsea}
+res_fgsea <- as.data.frame(res)
+
+# Load in libraries to annotate Data 
+
+# annotate the deseq2 results with additional gene identifiers
+
+ranks_fgsea <- res_fgsea$log2FoldChange
+names(ranks_fgsea) <- res_fgsea$entrez
+ranks_fgsea <- ranks_fgsea[!is.na(ranks_fgsea)]
+ranks_fgsea <- ranks_fgsea[!is.na(names(ranks_fgsea))]
+
+# Load genesets
+kegg_wehi <- readRDS("data/Mm.c2.cp.kegg.v7.1.entrez.rds")
+
+# Run GSEA
+fgsea_results <- fgsea(pathways = kegg_wehi,
+                       stats = ranks_fgsea,
+                       minSize = 15,
+                       maxSize = 500,
+                       nPermSimple = 50000)
+
+fgseaResTidy <- fgsea_results %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+
+# Plot GSEA result
+gsea_plot <- ggplot(fgseaResTidy[fgseaResTidy$padj<0.1,], 
+       aes(reorder(gsub("KEGG_", "", pathway), NES), NES, fill = NES > 0)) +
+  geom_col() +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Hallmark pathways NES from GSEA") + 
+  theme_minimal() +
+  scale_fill_manual(values  = c("blue", "red")) +
+  theme(legend.position = "none")
+gsea_plot
+```
