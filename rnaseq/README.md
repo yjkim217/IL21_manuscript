@@ -1,3 +1,4 @@
+# Codes to process and analyze CUT&RUN data
 - salmon.sh: bash script to run salmon on each RNA-sequencing reads (.fastq file)
 - rnaseq.Rmd: RMarkDown file containing R scripts to analyze salmon output and generate figures used in the manuscript
 - data/tx2gene.txt: tsv file containing gene symbol of each gene and corresponding ensemble code. 
