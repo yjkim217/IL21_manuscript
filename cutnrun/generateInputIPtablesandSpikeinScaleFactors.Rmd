@@ -1,0 +1,61 @@
+---
+title: "Generate table for peak calling"
+author: "RK"
+---
+
+```{r}
+library(stringr)
+```
+
+## Generate sampletable
+```{r}
+bam.files <- list.files(path = "bam_dovetailON", pattern = ".bam$", full.names = TRUE)
+bam.y <- bam.files[c(8:12, 16:25)] # this seq run included other samples, subset only pertinent
+st <- stringr::str_split(bam.y, "_", simplify = TRUE)[,c(3:8)]
+st <- as.data.frame(st)
+colnames(st) <- c("genotype", "cellcount", "antibody", "condition", "abtype", "replicate")
+st$pairID <- paste0(st$genotype, "_", st$cellcount, "_", st$antibody, "_", st$condition, "_", st$abtype)
+st$fileName <- bam.y
+row.names(st) <- paste0(st$genotype, "_", st$cellcount, "_", st$antibody, "_", st$condition, "_", st$abtype, "_", st$replicate)
+saveRDS(st, "sampletable_dovetailON_Y.rds")
+```
+
+```{r}
+st.y <- readRDS("sampletable_dovetailON_Y.rds")
+```
+
+## Generate IP pairs table
+```{r}
+tabdf <- data.frame(INPUT = c(rep(st.y$fileName[which(st.y$antibody %in% "input")], 14)),
+                    IP = st.y$fileName[-which(st.y$antibody %in% "input")])
+write.table(tabdf, "input_IP_pairs_dovetailON.txt", quote = FALSE, row.names = FALSE, col.names = FALSE, sep = "\t")
+```
+this table is used for MACS2
+
+# Generate size factors with spike-in DNA
+Use SacCer spike in DNA to determine sizefactors, using C as 10000 (https://yezhengstat.github.io/CUTTag_tutorial/#V_Spike-in_calibration)
+```{r}
+st <- readRDS("sampletable_dovetailON_Y.rds")
+
+st$sampleName <- stringr::str_split(st$fileName, "\\/", simplify = TRUE)[,2]
+st$sampleName <- stringr::str_split(st$sampleName, "_dupMark", simplify = TRUE)[,1]
+
+spikein <- read.table("spikein_bam/info.log")[,c(2,8)]
+spikein$V8 <- as.numeric(stringr::str_split(spikein$V8, ",", simplify = TRUE)[,1])
+spikein$V2 <- stringr::str_split(spikein$V2, "\\/", simplify = TRUE)[,2]
+colnames(spikein) <- c("sampleName", "spikeinReads")
+st <- merge(st,spikein, by = "sampleName", all.x = TRUE)
+
+const <- 10000
+st$sizeFactors <- const/st$spikeinReads
+
+sfdf <- data.frame(row.names = rownames(st),
+                   "fileName" = st$fileName,
+                   "sf" = st$sizeFactors)
+
+saveRDS(sfdf, "sizeFactors_inverse_SacCer_Y.rds")
+write.table(sfdf,file="sizeFactors_inverse_SacCer_Y.txt",row.names=T,col.names=F,quote=F,sep="\t")
+```
+
+
+
